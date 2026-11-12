@@ -65,7 +65,7 @@ init :: proc(
 	loc := #caller_location,
 	audio_thread_logger := context.logger,
 ) -> ^State {
-	assert(s == nil, "Don't call 'init' twice.")
+	// ODIN_PLUG: several instances (plugin editors) may exist, `init` makes the new one current, switch with `set_internal_state`
 	s = new(State, allocator, loc)
 	s.allocator = allocator
 	s.audio_thread_logger = audio_thread_logger
@@ -7046,6 +7046,11 @@ get_z :: proc() -> f32 {
 set_internal_state :: proc(state: ^State) {
 	s = state
 	frame_allocator = s.frame_allocator
+}
+
+// ODIN_PLUG: the current instance, to restore it after drawing another one
+get_internal_state :: proc() -> ^State {
+	return s
 }
 
 Open_URL_Error :: enum {
