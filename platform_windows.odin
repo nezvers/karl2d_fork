@@ -315,7 +315,10 @@ windows_before_present :: proc(s: ^Windows_State) {
 windows_get_events :: proc(s: ^Windows_State, events: ^[dynamic]Event) {
 	msg: win32.MSG
 
-	for win32.PeekMessageW(&msg, nil, 0, 0, win32.PM_REMOVE) {
+	// ODIN_PLUG: embedded windows share the thread with the host, only take messages of our own window
+	filter: win32.HWND = s.hwnd if s.embedded else nil
+
+	for win32.PeekMessageW(&msg, filter, 0, 0, win32.PM_REMOVE) {
 		win32.TranslateMessage(&msg)
 		win32.DispatchMessageW(&msg)
 	}
