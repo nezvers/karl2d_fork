@@ -61,6 +61,12 @@ windows_init :: proc(
 	s.custom_context = context
 	hm.dynamic_init(&s.custom_cursors, allocator)
 
+	// ODIN_PLUG: embedded windows live inside a host process, see `windows_init_embedded`
+	if options.parent_window != nil {
+		windows_init_embedded(s, screen_width, screen_height, options)
+		return
+	}
+
 	win32.SetProcessDpiAwarenessContext(win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
 	win32.SetProcessDPIAware()
 	win32.timeBeginPeriod(1)
@@ -184,6 +190,97 @@ windows_init :: proc(
 	} else {
 		#panic("Unsupported combo of Windows platform and render backend '" + RENDER_BACKEND_NAME + "'")
 	}
+}
+
+// ODIN_PLUG: child window inside a host window (audio plugin editor). Differences to a normal window:
+// - The window class is registered for the module that contains Karl2D (the plugin DLL) under a
+//   name unique to that module. With the default class name two plugin DLLs would share one class
+//   and the second would run the first one's window procedure (and crash once the first unloads).
+// - Process wide state is left alone: DPI awareness belongs to the host.
+// - No gamepad device notifications, plugins do not use gamepads.
+windows_init_embedded :: proc(s: ^Windows_State, screen_width: int, screen_height: int, options: Init_Options) {
+	s.embedded = true
+	s.parent = win32.HWND(options.parent_window)
+	win32.timeBeginPeriod(1)
+
+	module: win32.HMODULE
+	win32_ex.GetModuleHandleExW(
+		win32_ex.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | win32_ex.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		rawptr(windows_window_proc),
+		&module,
+	)
+	instance := win32.HINSTANCE(module)
+	class_name := windows_embedded_class_name(module)
+	class_name_w := cstring16(&class_name[0])
+
+	cls := win32.WNDCLASSW {
+		style = win32.CS_OWNDC,
+		lpfnWndProc = windows_window_proc,
+		lpszClassName = class_name_w,
+		hInstance = instance,
+		hCursor = win32.LoadCursorA(nil, win32.IDC_ARROW),
+	}
+
+	// Fails with ERROR_CLASS_ALREADY_EXISTS for the second editor of the same plugin, that is fine
+	win32.RegisterClassW(&cls)
+
+	// The parent decides the DPI, the host already scaled the size it asks for
+	s.window_scale = f32(win32.GetDpiForWindow(s.parent)) / 96.0
+	if s.window_scale <= 0 {
+		s.window_scale = 1
+	}
+
+	s.screen_width = screen_width
+	s.screen_height = screen_height
+	s.window_mode = .Windowed
+	s.restore_screen_width = screen_width
+	s.restore_screen_height = screen_height
+
+	s.hwnd = win32.CreateWindowExW(
+		0,
+		class_name_w,
+		nil,
+		win32.WS_CHILD | win32.WS_VISIBLE | win32.WS_CLIPSIBLINGS | win32.WS_CLIPCHILDREN,
+		0, 0,
+		i32(screen_width),
+		i32(screen_height),
+		s.parent, nil, instance, s,
+	)
+
+	assert(s.hwnd != nil, "Failed creating embedded window")
+	s.gamepad_quick_rescan_tick = {}
+
+	when RENDER_BACKEND_NAME == "d3d11" {
+		s.window_render_glue = (^Window_Render_Glue)(s.hwnd)
+	} else when RENDER_BACKEND_NAME == "gl" {
+		s.window_render_glue = create_windows_gl_glue(s.hwnd, s.allocator)
+	}  else when RENDER_BACKEND_NAME == "nil" {
+		s.window_render_glue = {}
+	} else {
+		#panic("Unsupported combo of Windows platform and render backend '" + RENDER_BACKEND_NAME + "'")
+	}
+}
+
+// ODIN_PLUG: "karl2d_" + module address in hex, null terminated UTF-16
+windows_embedded_class_name :: proc(module: win32.HMODULE) -> [32]u16 {
+	HEX := "0123456789abcdef"
+	name: [32]u16
+	prefix := "karl2d_"
+	n := 0
+
+	for c in prefix {
+		name[n] = u16(c)
+		n += 1
+	}
+
+	address := u64(uintptr(module))
+
+	for shift := 60; shift >= 0; shift -= 4 {
+		name[n] = u16(HEX[(address >> u64(shift)) & 15])
+		n += 1
+	}
+
+	return name
 }
 
 windows_shutdown :: proc(s: ^Windows_State) {
@@ -436,6 +533,12 @@ windows_set_screen_size :: proc(s: ^Windows_State, w, h: int) {
 	s.screen_width = w
 	s.screen_height = h
 
+	// ODIN_PLUG: a child window has no frame, the client size is the window size
+	if s.embedded {
+		win32.SetWindowPos(s.hwnd, {}, 0, 0, i32(w), i32(h), win32.SWP_NOACTIVATE | win32.SWP_NOZORDER | win32.SWP_NOMOVE)
+		return
+	}
+
 	r: win32.RECT
 	r.left = 0
 	r.top = 0
@@ -557,6 +660,10 @@ Windows_State :: struct {
 	restore_screen_width: int,
 	restore_screen_height: int,
 
+	// ODIN_PLUG: child window of a host window (`Init_Options.parent_window`)
+	embedded: bool,
+	parent: win32.HWND,
+
 	window_render_glue: ^Window_Render_Glue,
 
 	hicon: win32.HICON,
@@ -576,6 +683,11 @@ windows_get_window_mode :: proc(s: ^Windows_State) -> Window_Mode {
 }
 
 windows_set_window_mode :: proc(s: ^Windows_State, window_mode: Window_Mode) {
+	// ODIN_PLUG: the host owns the frame of an embedded window, styles would turn it into a top level window
+	if s.embedded {
+		return
+	}
+
 	old_window_mode := s.window_mode
 	s.window_mode = window_mode
 	style := windows_get_style(window_mode)
@@ -1242,7 +1354,10 @@ windows_window_proc :: proc "stdcall" (hwnd: win32.HWND, msg: win32.UINT, wparam
 
 	switch msg {
 	case win32.WM_DESTROY:
-		win32.PostQuitMessage(0)
+		// ODIN_PLUG: closing a plugin editor must not quit the host application
+		if !s.embedded {
+			win32.PostQuitMessage(0)
+		}
 
 	case win32.WM_CLOSE:
 		append(&s.events, Event_Close_Window_Requested{})

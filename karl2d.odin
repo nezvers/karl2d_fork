@@ -7469,6 +7469,12 @@ Init_Options :: struct {
 	// coordinates. Only used when `depth_test` is on.
 	depth_range_min: f32,
 	depth_range_max: f32,
+
+	// ODIN_PLUG: Native window to embed into (HWND on Windows), used by audio plugin editors. When set,
+	// Karl2D creates a borderless child window that fills `screen_width` x `screen_height` of the parent,
+	// does not touch process wide settings (DPI awareness, quit messages) and only handles messages of
+	// its own window. `window_mode` and `monitor` are ignored. Only implemented on Windows for now.
+	parent_window: rawptr,
 }
 
 DEPTH_RANGE_DEFAULT_MIN :: -1

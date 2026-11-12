@@ -5,6 +5,8 @@ import win32 "core:sys/windows"
 
 foreign import user32 "system:User32.lib"
 foreign import gdi32 "system:Gdi32.lib"
+// ODIN_PLUG: GetModuleHandleExW for embedded windows (window class per plugin DLL)
+foreign import kernel32 "system:Kernel32.lib"
 
 MONITORINFOF_PRIMARY :: 0x00000001
 
@@ -236,4 +238,13 @@ foreign gdi32 {
 		pszPort: win32.LPCWSTR,
 		pdm: ^win32.DEVMODEW,
 	) -> win32.HDC ---
+}
+
+// ODIN_PLUG: finds the module (DLL) that contains an address, used to register window classes per DLL
+GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT :: 0x00000002
+GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS :: 0x00000004
+
+@(default_calling_convention="system")
+foreign kernel32 {
+	GetModuleHandleExW :: proc(dwFlags: win32.DWORD, lpModuleName: rawptr, phModule: ^win32.HMODULE) -> win32.BOOL ---
 }
