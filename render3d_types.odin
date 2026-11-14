@@ -116,6 +116,7 @@ R3d_Pass :: enum {
 R3d_Backend_Mesh :: struct {
 	vertex_buffer: rawptr,
 	index_buffer: rawptr,
+	vertex_array: u32,
 	vertex_count: int,
 	index_count: int,
 }

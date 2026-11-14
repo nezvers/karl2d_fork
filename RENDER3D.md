@@ -15,6 +15,8 @@ with `RENDER3D:`. No upstream-owned file is edited: `git diff --stat odin_plug..
 | `render3d_backend_interface.odin` | `R3d_Backend_Interface`: mesh, begin/end pass, instanced draw, read_pixels |
 | `render3d_backend_chooser.odin` | picks the 3D backend from `RENDER_BACKEND_NAME` (backends without a 3D implementation use the nil one) |
 | `render3d_backend_d3d11.odin` + `render3d_shaders/r3d_mesh_d3d11.hlsl` | D3D11: own shaders, retained vertex/index buffers, instance data texture bound to the VERTEX stage, own rasterizer/depth states |
+| `render3d_backend_gl.odin` + `render3d_shaders/r3d_mesh.glsl` | desktop GL: the same design, uniform blocks, VAO per mesh, `glDrawElementsInstanced`; restores the GL states the karl2d GL backend assumes |
+| `render3d_backend_webgl.odin` | WebGL2 (html5): same source and shader file (GLSL ES 3.00 header), WebGL binding types |
 | `render3d_backend_nil.odin` | headless: counts passes, draws, instances, triangles |
 | `render3d_internal.odin` | the one place that asks karl2d for its state |
 | `examples_3d/toon_scene` | toon + rim + outline + fog, 64 cubes in one draw call; `-define:R3D_SCREENSHOT=out.png -define:R3D_FRAMES=30` writes a PNG and exits |
@@ -39,8 +41,9 @@ D3D11 backend only: `D3D11_State.{device, device_context, framebuffer, framebuff
 
 ## Status (milestones of the plan)
 
-M0/M1 on D3D11 done: toon bands (or ramp texture), rim light, specular blob, hemisphere ambient, fog, inverted-hull outline with constant screen width, albedo texture / vertex colour / cutout, instancing through a vertex-fetched data texture.
-Not done yet: GL and WebGL backends (they use the nil backend and log a warning), global wind/tween data, clustered lights, shadows, runtime AO, GPU skinning, post-effect examples, `examples_3d` web checks.
+M0/M1 done on D3D11, GL and WebGL2: toon bands (or ramp texture), rim light, specular blob, hemisphere ambient, fog, inverted-hull outline with constant screen width, albedo texture / vertex colour / cutout, instancing through a vertex-fetched data texture.
+Verified: the same deterministic frame of `toon_scene` rendered by D3D11 and by GL differs by a mean of 0.00 of 255 (`odin run tools/dev -- karl2d` from odin_plug builds both, runs them and compares), and the html5 build rendered by headless Edge/Chrome matches D3D11 at a coarse 48x27 grid (mean 0.93 of 255).
+Not done yet: global wind/tween data, clustered lights, shadows, runtime AO, GPU skinning, post-effect examples, more examples.
 
 ## Known facts about this branch
 

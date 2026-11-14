@@ -69,6 +69,10 @@ step :: proc() -> bool {
 	}
 
 	t := f32(k2.get_time())
+	if SCREENSHOT != "" {
+		t = f32(FRAMES - 1) / 60
+	}
+
 	k2.clear({182, 205, 232, 255})
 
 	camera := k2.R3d_Camera {
@@ -113,17 +117,20 @@ step :: proc() -> bool {
 
 	stats := k2.r3d_stats()
 	k2.set_z(1)
-	k2.draw_text(fmt.tprintf("3D: %v draw calls, %v instances, %v triangles   %.1f ms", stats.draw_calls, stats.instances, stats.triangles, k2.get_frame_time() * 1000), {12, 10}, 20, k2.BLACK)
+	if SCREENSHOT == "" {
+		k2.draw_text(fmt.tprintf("3D: %v draw calls, %v instances, %v triangles   %.1f ms", stats.draw_calls, stats.instances, stats.triangles, k2.get_frame_time() * 1000), {12, 10}, 20, k2.BLACK)
+	}
 	k2.r3d_reset_stats()
 	k2.set_z(0)
 
 	frame += 1
 
-	if SCREENSHOT != "" && frame >= FRAMES {
+	if SCREENSHOT != "" && frame == FRAMES {
 		pixels, width, height, ok := k2.r3d_read_pixels({})
 		ensure(ok)
-		save_screenshot(SCREENSHOT, pixels, width, height)
-		return false
+		if save_screenshot(SCREENSHOT, pixels, width, height) {
+			return false
+		}
 	}
 
 	k2.present()
