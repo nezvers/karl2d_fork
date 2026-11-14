@@ -20,6 +20,8 @@ layout(std140) uniform Globals {
 	vec4 fog_params;
 	vec4 wind;
 	vec4 wind_params;
+	vec4 lights;
+	vec4 cluster;
 	vec4 user[4];
 };
 
@@ -38,6 +40,9 @@ layout(std140) uniform Material {
 uniform sampler2D instance_data;
 uniform sampler2D albedo_tex;
 uniform sampler2D ramp_tex;
+uniform sampler2D light_data;
+uniform sampler2D cluster_grid;
+uniform sampler2D light_indices;
 
 #define INSTANCES_PER_ROW 128
 #define INSTANCE_TEXELS 8
@@ -48,6 +53,7 @@ VARYING vec2 v_uv;
 VARYING vec4 v_color;
 VARYING vec4 v_instance_tint;
 VARYING vec2 v_tween;
+VARYING vec4 v_clip_info;
 
 #ifdef R3D_VERTEX
 
@@ -147,6 +153,7 @@ void main() {
 	v_color = a_color;
 	v_instance_tint = fetch_instance(gl_InstanceID, 3);
 	v_tween = vec2(tw, float(effect));
+	v_clip_info = vec4(clip.x, clip.y, clip.w, -(view * vec4(world, 1.0)).z);
 	gl_Position = clip;
 }
 
@@ -191,6 +198,54 @@ float toon_light(float t) {
 	return clamp((floor(x) + smoothstep(1.0 - soft, 1.0, fract(x))) / bands, 0.0, 1.0);
 }
 
+ivec2 data_texel(int n) {
+	return ivec2(n % 1024, n / 1024);
+}
+
+vec3 cluster_lights(vec3 n, vec3 world) {
+	int light_count = int(lights.x);
+	if (light_count == 0) return vec3(0.0);
+
+	vec2 ndc = v_clip_info.xy / v_clip_info.z;
+	int cx = clamp(int((ndc.x * 0.5 + 0.5) * lights.y), 0, int(lights.y) - 1);
+	int cy = clamp(int((ndc.y * 0.5 + 0.5) * lights.z), 0, int(lights.z) - 1);
+	int cz = clamp(int(log(max(v_clip_info.w, cluster.x)) * cluster.z + cluster.w), 0, int(lights.w) - 1);
+	int cluster_index = (cz * int(lights.z) + cy) * int(lights.y) + cx;
+
+	vec4 cell = texelFetch(cluster_grid, data_texel(cluster_index), 0);
+	int offset = int(cell.x + 0.5);
+	int count = int(cell.y + 0.5);
+	vec3 total = vec3(0.0);
+
+	for (int k = 0; k < count; k++) {
+		int entry = offset + k;
+		vec4 index_texel = texelFetch(light_indices, data_texel(entry / 4), 0);
+		int light_index = int(index_texel[entry % 4] + 0.5);
+
+		vec4 l0 = texelFetch(light_data, data_texel(light_index * 3), 0);
+		vec4 l1 = texelFetch(light_data, data_texel(light_index * 3 + 1), 0);
+		vec4 l2 = texelFetch(light_data, data_texel(light_index * 3 + 2), 0);
+
+		vec3 to_light = l0.xyz - world;
+		float dist = length(to_light);
+		if (dist >= l0.w) continue;
+
+		vec3 dir = to_light / max(dist, 0.0001);
+		float falloff = clamp(1.0 - (dist * dist) / (l0.w * l0.w), 0.0, 1.0);
+		falloff *= falloff;
+
+		float cone = 1.0;
+		if (l1.w > -1.5) {
+			cone = smoothstep(l1.w, max(l2.w, l1.w + 0.001), dot(-dir, l2.xyz));
+		}
+
+		float lit = toon_light(clamp(dot(n, dir), 0.0, 1.0) * 0.5 + 0.5);
+		total += l1.xyz * (lit * falloff * cone);
+	}
+
+	return total;
+}
+
 void main() {
 	vec4 base = tint * v_instance_tint;
 	int effect = int(v_tween.y + 0.5);
@@ -226,7 +281,7 @@ void main() {
 		float lit = toon_light(ndl * 0.5 + 0.5);
 		float shade = mix(toon.w, 1.0, lit);
 		vec3 ambient = mix(ambient_ground.rgb, ambient_sky.rgb, n.y * 0.5 + 0.5);
-		color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade);
+		color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade + cluster_lights(n, v_world_pos));
 
 		if (specular.a > 0.0) {
 			vec3 h = normalize(l + v);

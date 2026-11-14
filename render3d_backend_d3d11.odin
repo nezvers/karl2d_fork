@@ -16,6 +16,7 @@ R3D_BACKEND_D3D11 :: R3d_Backend_Interface {
 	init = r3d_d3d11_init,
 	shutdown = r3d_d3d11_shutdown,
 	create_mesh = r3d_d3d11_create_mesh,
+	upload_lights = r3d_d3d11_upload_lights,
 	destroy_mesh = r3d_d3d11_destroy_mesh,
 	begin_pass = r3d_d3d11_begin_pass,
 	end_pass = r3d_d3d11_end_pass,
@@ -44,6 +45,8 @@ R3d_D3D11_State :: struct {
 	sampler_linear: ^d3d11.ISamplerState,
 	white_texture: ^d3d11.ITexture2D,
 	white_view: ^d3d11.IShaderResourceView,
+	light_textures: [3]^d3d11.ITexture2D,
+	light_views: [3]^d3d11.IShaderResourceView,
 
 	flip_y: bool,
 }
@@ -211,6 +214,28 @@ r3d_d3d11_init :: proc(s: ^R3d_D3D11_State, rb_state: ^Render_Backend_State, max
 		return false
 	}
 
+	light_desc := d3d11.TEXTURE2D_DESC {
+		Width = R3D_DATA_TEXTURE_WIDTH,
+		Height = R3D_DATA_TEXTURE_HEIGHT,
+		MipLevels = 1,
+		ArraySize = 1,
+		Format = .R32G32B32A32_FLOAT,
+		SampleDesc = {Count = 1},
+		Usage = .DYNAMIC,
+		BindFlags = {.SHADER_RESOURCE},
+		CPUAccessFlags = {.WRITE},
+	}
+
+	for i in 0 ..< 3 {
+		if !d3d11_check(s.rb, device->CreateTexture2D(&light_desc, nil, &s.light_textures[i])) {
+			return false
+		}
+
+		if !d3d11_check(s.rb, device->CreateShaderResourceView(s.light_textures[i], nil, &s.light_views[i])) {
+			return false
+		}
+	}
+
 	point_desc := d3d11.SAMPLER_DESC {
 		Filter = .MIN_MAG_MIP_POINT,
 		AddressU = .CLAMP,
@@ -248,6 +273,11 @@ r3d_d3d11_shutdown :: proc(s: ^R3d_D3D11_State) {
 	if s.material_buffer != nil { s.material_buffer->Release() }
 	if s.instance_view != nil { s.instance_view->Release() }
 	if s.instance_texture != nil { s.instance_texture->Release() }
+	for i in 0 ..< 3 {
+		if s.light_views[i] != nil { s.light_views[i]->Release() }
+		if s.light_textures[i] != nil { s.light_textures[i]->Release() }
+	}
+
 	if s.white_view != nil { s.white_view->Release() }
 	if s.white_texture != nil { s.white_texture->Release() }
 	if s.sampler_point != nil { s.sampler_point->Release() }
@@ -302,6 +332,28 @@ r3d_d3d11_upload :: proc(s: ^R3d_D3D11_State, buffer: ^d3d11.IBuffer, data: rawp
 	}
 }
 
+r3d_d3d11_upload_lights :: proc(s: ^R3d_D3D11_State, textures: ^R3d_Light_Textures) {
+	dc := s.rb.device_context
+	sources := [3]^R3d_Data_Texture{&textures.lights, &textures.grid, &textures.indices}
+
+	for source, i in sources {
+		mapped: d3d11.MAPPED_SUBRESOURCE
+
+		if !d3d11_check(s.rb, dc->Map(s.light_textures[i], 0, .WRITE_DISCARD, {}, &mapped)) {
+			continue
+		}
+
+		row_bytes := R3D_DATA_TEXTURE_WIDTH * size_of([4]f32)
+
+		for row in 0 ..< R3D_DATA_TEXTURE_HEIGHT {
+			dst := rawptr(uintptr(mapped.pData) + uintptr(row) * uintptr(mapped.RowPitch))
+			runtime.mem_copy(dst, &source[row * R3D_DATA_TEXTURE_WIDTH], row_bytes)
+		}
+
+		dc->Unmap(s.light_textures[i], 0)
+	}
+}
+
 r3d_d3d11_begin_pass :: proc(s: ^R3d_D3D11_State, target: Render_Target_Handle, width, height: int, flip_y: bool, globals: ^R3d_Globals) {
 	dc := s.rb.device_context
 	s.flip_y = flip_y
@@ -331,15 +383,16 @@ r3d_d3d11_begin_pass :: proc(s: ^R3d_D3D11_State, target: Render_Target_Handle, 
 	dc->VSSetConstantBuffers(1, 1, &s.material_buffer)
 	dc->PSSetConstantBuffers(1, 1, &s.material_buffer)
 	dc->VSSetShaderResources(0, 1, &s.instance_view)
+	dc->PSSetShaderResources(3, 3, &s.light_views[0])
 	dc->VSSetSamplers(0, 1, &s.sampler_point)
 	dc->PSSetSamplers(1, 1, &s.sampler_linear)
 }
 
 r3d_d3d11_end_pass :: proc(s: ^R3d_D3D11_State) {
 	dc := s.rb.device_context
-	no_views := [2]^d3d11.IShaderResourceView{}
+	no_views := [5]^d3d11.IShaderResourceView{}
 	dc->VSSetShaderResources(0, 1, &no_views[0])
-	dc->PSSetShaderResources(1, 2, &no_views[0])
+	dc->PSSetShaderResources(1, 5, &no_views[0])
 	dc->OMSetRenderTargets(0, nil, nil)
 	d3d11_log_messages(s.rb)
 }

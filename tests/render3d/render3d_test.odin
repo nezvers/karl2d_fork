@@ -262,3 +262,143 @@ test_material_wind_reaches_the_gpu_constants :: proc(t: ^testing.T) {
 	testing.expect_value(t, material.wind_weight, 0)
 	testing.expect(t, material.wind_height > 0)
 }
+
+@(private="file")
+light_camera :: proc() -> (view, view_projection: k2.Mat4, params: k2.R3d_Cluster_Params) {
+	camera := k2.R3d_Camera{position = {0, 2, 12}, target = {0, 1, 0}, fov_y_degrees = 60, near = 0.1, far = 80}
+	v, projection := k2.r3d_camera_matrices(camera, 16.0 / 9.0, 0, 1)
+	return v, projection * v, k2.r3d_cluster_params(0.1, 80)
+}
+
+@(private="file")
+cluster_has_light :: proc(textures: ^k2.R3d_Light_Textures, cluster: int, light: int) -> bool {
+	cell := textures.grid[cluster]
+	flat := (^[k2.R3D_MAX_INDEX_ENTRIES]f32)(&textures.indices[0])
+
+	for k in 0 ..< int(cell[1]) {
+		if int(flat[int(cell[0]) + k]) == light {
+			return true
+		}
+	}
+
+	return false
+}
+
+@(test)
+test_cluster_slices_are_logarithmic_and_clamped :: proc(t: ^testing.T) {
+	params := k2.r3d_cluster_params(0.1, 80)
+	testing.expect_value(t, k2.r3d_cluster_slice(params, 0.1), 0)
+	testing.expect_value(t, k2.r3d_cluster_slice(params, 0.0001), 0)
+	testing.expect_value(t, k2.r3d_cluster_slice(params, 80), k2.R3D_CLUSTERS_Z - 1)
+	testing.expect_value(t, k2.r3d_cluster_slice(params, 5000), k2.R3D_CLUSTERS_Z - 1)
+
+	previous := 0
+	for i in 0 ..< 1000 {
+		slice := k2.r3d_cluster_slice(params, 0.1 + f32(i) * 0.08)
+		testing.expect(t, slice >= previous, "slices never go back as the depth grows")
+		previous = slice
+	}
+
+	near_width := k2.r3d_cluster_slice(params, 0.2) - k2.r3d_cluster_slice(params, 0.1)
+	far_start, far_end := k2.r3d_cluster_slice(params, 40), k2.r3d_cluster_slice(params, 80)
+	testing.expect(t, far_start < far_end && near_width > 0, "doubling the depth is about the same number of slices near and far")
+}
+
+@(test)
+test_lights_are_packed_for_the_shader :: proc(t: ^testing.T) {
+	textures := new(k2.R3d_Light_Textures)
+	defer free(textures)
+	lights := [2]k2.R3d_Light {
+		{position = {1, 2, 3}, radius = 5, color = {1, 0.5, 0.25}, intensity = 2},
+		{position = {0, 0, 0}, radius = 3, color = {1, 1, 1}, intensity = 1, direction = {0, -4, 0}, spot_outer_degrees = 40, spot_inner_degrees = 20},
+	}
+	testing.expect_value(t, k2.r3d_pack_lights(textures, lights[:]), 2)
+	testing.expect_value(t, textures.lights[0], [4]f32{1, 2, 3, 5})
+	testing.expect_value(t, textures.lights[1], [4]f32{2, 1, 0.5, -2})
+	testing.expect(t, abs(textures.lights[4][3] - math.cos(math.to_radians(f32(40)))) < 1e-6, "outer cone")
+	testing.expect(t, abs(textures.lights[5][3] - math.cos(math.to_radians(f32(20)))) < 1e-6, "inner cone")
+	testing.expect_value(t, textures.lights[5].xyz, [3]f32{0, -1, 0})
+}
+
+// The binning must be conservative: any point a light can reach, seen from the camera, is in a cluster that lists that light
+@(test)
+test_every_lit_point_is_in_a_cluster_with_its_light :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	view, view_projection, params := light_camera()
+	textures := new(k2.R3d_Light_Textures)
+	defer free(textures)
+
+	seed: u64 = 12345
+	random :: proc(seed: ^u64) -> f32 {
+		seed^ = seed^ * 6364136223846793005 + 1442695040888963407
+		return f32(seed^ >> 40) / f32(1 << 24)
+	}
+
+	lights: [60]k2.R3d_Light
+	for &light in lights {
+		light = {
+			position = {random(&seed) * 40 - 20, random(&seed) * 6, random(&seed) * 55 - 60},
+			radius = 1 + random(&seed) * 3,
+			color = {1, 1, 1},
+			intensity = 1,
+		}
+	}
+
+	stats := k2.r3d_bin_lights(textures, lights[:], view, view_projection, params)
+	testing.expect_value(t, stats.lights, 60)
+	testing.expect_value(t, stats.dropped_entries, 0)
+	testing.expect(t, stats.entries > 60, "lights reach several clusters")
+
+	checked := 0
+	for light, i in lights {
+		for _ in 0 ..< 80 {
+			direction := k2.Vec3{random(&seed) * 2 - 1, random(&seed) * 2 - 1, random(&seed) * 2 - 1}
+			if linalg.length(direction) < 0.01 { continue }
+			point := light.position + linalg.normalize(direction) * light.radius * random(&seed) * 0.999
+			cluster, in_view := k2.r3d_cluster_of_point(view, view_projection, params, point)
+
+			if !in_view { continue }
+			checked += 1
+
+			if !cluster_has_light(textures, cluster, i) {
+				testing.expectf(t, false, "light %v reaches %v, but its cluster %v does not list it", i, point, cluster)
+				return
+			}
+		}
+	}
+
+	testing.expect(t, checked > 500, "enough sample points were in view")
+}
+
+@(test)
+test_light_binning_edge_cases :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	view, view_projection, params := light_camera()
+	textures := new(k2.R3d_Light_Textures)
+	defer free(textures)
+
+	behind := k2.R3d_Light{position = {0, 2, 40}, radius = 3, color = {1, 1, 1}, intensity = 1}
+	aside := k2.R3d_Light{position = {500, 0, 0}, radius = 3, color = {1, 1, 1}, intensity = 1}
+	stats := k2.r3d_bin_lights(textures, {behind, aside}, view, view_projection, params)
+	testing.expect_value(t, stats.culled, 2)
+	testing.expect_value(t, stats.entries, 0)
+
+	around_camera := k2.R3d_Light{position = {0, 2, 12}, radius = 4, color = {1, 1, 1}, intensity = 1}
+	stats = k2.r3d_bin_lights(textures, {around_camera}, view, view_projection, params)
+	testing.expect_value(t, stats.culled, 0)
+	for y in 0 ..< k2.R3D_CLUSTERS_Y {
+		for x in 0 ..< k2.R3D_CLUSTERS_X {
+			testing.expect(t, cluster_has_light(textures, k2.r3d_cluster_index(x, y, 0), 0), "a light around the camera lights every tile of the first slice")
+		}
+	}
+
+	crowd: [200]k2.R3d_Light
+	for &light in crowd {
+		light = {position = {0, 1, 0}, radius = 2, color = {1, 1, 1}, intensity = 1}
+	}
+	stats = k2.r3d_bin_lights(textures, crowd[:], view, view_projection, params)
+	testing.expect_value(t, stats.busiest_cluster, k2.R3D_MAX_LIGHTS_PER_CLUSTER)
+	testing.expect(t, stats.dropped_entries > 0, "a cluster holds a fixed number of lights, the rest is counted as dropped")
+
+	testing.expect_value(t, k2.r3d_pack_lights(textures, make([]k2.R3d_Light, k2.R3D_MAX_LIGHTS + 50)), k2.R3D_MAX_LIGHTS)
+}

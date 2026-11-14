@@ -13,6 +13,8 @@ cbuffer Globals : register(b0) {
 	float4 fog_params;
 	float4 wind;
 	float4 wind_params;
+	float4 lights;
+	float4 cluster;
 	float4 user[4];
 };
 
@@ -31,6 +33,9 @@ cbuffer Material : register(b1) {
 Texture2D instance_data : register(t0);
 Texture2D albedo_tex : register(t1);
 Texture2D ramp_tex : register(t2);
+Texture2D light_data : register(t3);
+Texture2D cluster_grid : register(t4);
+Texture2D light_indices : register(t5);
 SamplerState point_smp : register(s0);
 SamplerState linear_smp : register(s1);
 
@@ -56,6 +61,7 @@ struct VS_OUT {
 	float4 color : COLOR0;
 	float4 instance_tint : COLOR1;
 	float2 tween : TEXCOORD3;
+	float4 clip_info : TEXCOORD4;
 };
 
 float4 fetch_instance(uint instance, uint k) {
@@ -146,6 +152,7 @@ VS_OUT vs_common(VS_IN v, bool outline) {
 	o.color = v.color;
 	o.instance_tint = fetch_instance(v.instance, 3);
 	o.tween = float2(tw, float(effect));
+	o.clip_info = float4(clip.x, clip.y, clip.w, -mul(view, float4(world, 1)).z);
 	return o;
 }
 
@@ -166,6 +173,54 @@ float toon_light(float t) {
 	float x = saturate(t) * bands;
 	float soft = clamp(toon.y * bands, 0.001, 0.5);
 	return saturate((floor(x) + smoothstep(1.0 - soft, 1.0, frac(x))) / bands);
+}
+
+int2 data_texel(int n) {
+	return int2(n % 1024, n / 1024);
+}
+
+float3 cluster_lights(float3 n, float3 world, float4 clip_info) {
+	int light_count = int(lights.x);
+	if (light_count == 0) return float3(0.0, 0.0, 0.0);
+
+	float2 ndc = clip_info.xy / clip_info.z;
+	int cx = clamp(int((ndc.x * 0.5 + 0.5) * lights.y), 0, int(lights.y) - 1);
+	int cy = clamp(int((ndc.y * 0.5 + 0.5) * lights.z), 0, int(lights.z) - 1);
+	int cz = clamp(int(log(max(clip_info.w, cluster.x)) * cluster.z + cluster.w), 0, int(lights.w) - 1);
+	int cluster_index = (cz * int(lights.z) + cy) * int(lights.y) + cx;
+
+	float4 cell = cluster_grid.Load(int3(data_texel(cluster_index), 0));
+	int offset = int(cell.x + 0.5);
+	int count = int(cell.y + 0.5);
+	float3 total = float3(0.0, 0.0, 0.0);
+
+	[loop] for (int k = 0; k < count; k++) {
+		int entry = offset + k;
+		float4 index_texel = light_indices.Load(int3(data_texel(entry / 4), 0));
+		int light_index = int(index_texel[entry % 4] + 0.5);
+
+		float4 l0 = light_data.Load(int3(data_texel(light_index * 3), 0));
+		float4 l1 = light_data.Load(int3(data_texel(light_index * 3 + 1), 0));
+		float4 l2 = light_data.Load(int3(data_texel(light_index * 3 + 2), 0));
+
+		float3 to_light = l0.xyz - world;
+		float dist = length(to_light);
+		if (dist >= l0.w) continue;
+
+		float3 dir = to_light / max(dist, 0.0001);
+		float falloff = saturate(1.0 - (dist * dist) / (l0.w * l0.w));
+		falloff *= falloff;
+
+		float cone = 1.0;
+		if (l1.w > -1.5) {
+			cone = smoothstep(l1.w, max(l2.w, l1.w + 0.001), dot(-dir, l2.xyz));
+		}
+
+		float lit = toon_light(saturate(dot(n, dir)) * 0.5 + 0.5);
+		total += l1.xyz * (lit * falloff * cone);
+	}
+
+	return total;
 }
 
 float4 ps_main(VS_OUT i) : SV_Target {
@@ -203,7 +258,7 @@ float4 ps_main(VS_OUT i) : SV_Target {
 		float lit = toon_light(ndl * 0.5 + 0.5);
 		float shade = lerp(toon.w, 1.0, lit);
 		float3 ambient = lerp(ambient_ground.rgb, ambient_sky.rgb, n.y * 0.5 + 0.5);
-		color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade);
+		color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade + cluster_lights(n, i.world_pos, i.clip_info));
 
 		if (specular.a > 0.0) {
 			float3 h = normalize(l + v);

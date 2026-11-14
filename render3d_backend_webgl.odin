@@ -15,6 +15,7 @@ R3D_BACKEND_WEBGL :: R3d_Backend_Interface {
 	init = r3d_webgl_init,
 	shutdown = r3d_webgl_shutdown,
 	create_mesh = r3d_webgl_create_mesh,
+	upload_lights = r3d_webgl_upload_lights,
 	destroy_mesh = r3d_webgl_destroy_mesh,
 	begin_pass = r3d_webgl_begin_pass,
 	end_pass = r3d_webgl_end_pass,
@@ -35,6 +36,7 @@ R3d_WebGL_State :: struct {
 	material_buffer: gl.Buffer,
 	instance_texture: gl.Texture,
 	white_texture: gl.Texture,
+	light_textures: [3]gl.Texture,
 	sampler_point: gl.Sampler,
 	sampler_linear: gl.Sampler,
 
@@ -67,6 +69,9 @@ r3d_webgl_init :: proc(s: ^R3d_WebGL_State, rb_state: ^Render_Backend_State, max
 		gl.Uniform1i(gl.GetUniformLocation(program, "instance_data"), 0)
 		gl.Uniform1i(gl.GetUniformLocation(program, "albedo_tex"), 1)
 		gl.Uniform1i(gl.GetUniformLocation(program, "ramp_tex"), 2)
+		gl.Uniform1i(gl.GetUniformLocation(program, "light_data"), 3)
+		gl.Uniform1i(gl.GetUniformLocation(program, "cluster_grid"), 4)
+		gl.Uniform1i(gl.GetUniformLocation(program, "light_indices"), 5)
 		gl.UniformBlockBinding(program, gl.GetUniformBlockIndex(program, "Globals"), 0)
 		gl.UniformBlockBinding(program, gl.GetUniformBlockIndex(program, "Material"), 1)
 	}
@@ -93,6 +98,14 @@ r3d_webgl_init :: proc(s: ^R3d_WebGL_State, rb_state: ^Render_Backend_State, max
 	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, len(white), &white[0])
 	gl.BindTexture(gl.TEXTURE_2D, 0)
 
+	for i in 0 ..< 3 {
+		s.light_textures[i] = gl.CreateTexture()
+		gl.BindTexture(gl.TEXTURE_2D, s.light_textures[i])
+		gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, R3D_DATA_TEXTURE_WIDTH, R3D_DATA_TEXTURE_HEIGHT, 0, gl.RGBA, gl.FLOAT, 0, nil)
+	}
+
+	gl.BindTexture(gl.TEXTURE_2D, 0)
+
 	s.sampler_point = gl.CreateSampler()
 	gl.SamplerParameteri(s.sampler_point, gl.TEXTURE_MIN_FILTER, i32(gl.NEAREST))
 	gl.SamplerParameteri(s.sampler_point, gl.TEXTURE_MAG_FILTER, i32(gl.NEAREST))
@@ -117,6 +130,11 @@ r3d_webgl_shutdown :: proc(s: ^R3d_WebGL_State) {
 	gl.DeleteBuffer(s.material_buffer)
 	gl.DeleteTexture(s.instance_texture)
 	gl.DeleteTexture(s.white_texture)
+
+	for texture in s.light_textures {
+		gl.DeleteTexture(texture)
+	}
+
 	gl.DeleteSampler(s.sampler_point)
 	gl.DeleteSampler(s.sampler_linear)
 }
@@ -168,6 +186,19 @@ r3d_webgl_destroy_mesh :: proc(s: ^R3d_WebGL_State, mesh: R3d_Backend_Mesh) {
 	gl.DeleteVertexArray(gl.VertexArrayObject(mesh.vertex_array))
 }
 
+r3d_webgl_upload_lights :: proc(s: ^R3d_WebGL_State, textures: ^R3d_Light_Textures) {
+	sources := [3]^R3d_Data_Texture{&textures.lights, &textures.grid, &textures.indices}
+	gl.ActiveTexture(gl.TEXTURE3)
+
+	for source, i in sources {
+		gl.BindTexture(gl.TEXTURE_2D, s.light_textures[i])
+		gl.TexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, R3D_DATA_TEXTURE_WIDTH, R3D_DATA_TEXTURE_HEIGHT, gl.RGBA, gl.FLOAT, size_of(R3d_Data_Texture), &source[0])
+	}
+
+	gl.BindTexture(gl.TEXTURE_2D, 0)
+	gl.ActiveTexture(gl.TEXTURE0)
+}
+
 r3d_webgl_begin_pass :: proc(s: ^R3d_WebGL_State, target: Render_Target_Handle, width, height: int, flip_y: bool, globals: ^R3d_Globals) {
 	s.flip_y = flip_y
 
@@ -198,10 +229,18 @@ r3d_webgl_begin_pass :: proc(s: ^R3d_WebGL_State, target: Render_Target_Handle, 
 	gl.BindSampler(gl.Enum(0), s.sampler_point)
 	gl.BindSampler(gl.Enum(1), s.sampler_linear)
 	gl.BindSampler(gl.Enum(2), s.sampler_linear)
+
+	for i in 0 ..< 3 {
+		gl.ActiveTexture(gl.Enum(u32(gl.TEXTURE3) + u32(i)))
+		gl.BindTexture(gl.TEXTURE_2D, s.light_textures[i])
+		gl.BindSampler(gl.Enum(3 + i), s.sampler_point)
+	}
+
+	gl.ActiveTexture(gl.TEXTURE0)
 }
 
 r3d_webgl_end_pass :: proc(s: ^R3d_WebGL_State) {
-	for unit in 0 ..< 3 {
+	for unit in 0 ..< 6 {
 		gl.ActiveTexture(gl.Enum(u32(gl.TEXTURE0) + u32(unit)))
 		gl.BindTexture(gl.TEXTURE_2D, 0)
 		gl.BindSampler(gl.Enum(unit), 0)

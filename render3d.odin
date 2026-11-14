@@ -22,6 +22,8 @@ R3d_State :: struct {
 	in_scene: bool,
 	stats: R3d_Stats,
 	frustum: R3d_Frustum,
+	light_textures: ^R3d_Light_Textures,
+	light_stats: R3d_Light_Stats,
 }
 
 @(private="file")
@@ -44,6 +46,7 @@ r3d_init :: proc(max_instances := R3D_DEFAULT_MAX_INSTANCES, allocator := contex
 	r3d.allocator = allocator
 	r3d.backend = R3D_BACKEND
 	r3d.max_instances = max(max_instances, R3D_INSTANCES_PER_ROW)
+	r3d.light_textures = new(R3d_Light_Textures, allocator)
 	hm.dynamic_init(&r3d.meshes, allocator)
 
 	backend_state, state_err := mem_alloc_state(r3d.backend.state_type, allocator)
@@ -82,6 +85,7 @@ r3d_shutdown :: proc() {
 	free(r3d.backend_state, r3d.allocator)
 	hm.dynamic_destroy(&r3d.meshes)
 	allocator := r3d.allocator
+	free(r3d.light_textures, allocator)
 	free(r3d, allocator)
 	r3d = nil
 }
@@ -128,7 +132,7 @@ r3d_reset_stats :: proc() {
 	r3d.stats = {}
 }
 
-r3d_begin_scene :: proc(camera: R3d_Camera, environment: R3d_Environment) {
+r3d_begin_scene :: proc(camera: R3d_Camera, environment: R3d_Environment, lights: []R3d_Light = nil) {
 	assert(!r3d.in_scene, "r3d_begin_scene called twice without r3d_end_scene")
 	ks := r3d_karl2d_state()
 
@@ -153,9 +157,25 @@ r3d_begin_scene :: proc(camera: R3d_Camera, environment: R3d_Environment) {
 
 	globals := r3d_make_globals(camera, environment, view, projection, width, height)
 	r3d.frustum = r3d_frustum_from_view_projection(globals.view_proj, camera.position)
+	r3d.light_stats = {}
+
+	if len(lights) > 0 {
+		near := camera.near if camera.near > 0 else 0.1
+		far := camera.far if camera.far > near else 200
+		params := r3d_cluster_params(near, far)
+		r3d.light_stats = r3d_bin_lights(r3d.light_textures, lights, view, globals.view_proj, params)
+		globals.lights = {f32(r3d.light_stats.lights), R3D_CLUSTERS_X, R3D_CLUSTERS_Y, R3D_CLUSTERS_Z}
+		globals.cluster = {params.near, params.far, params.scale, params.bias}
+		r3d.backend.upload_lights(r3d.backend_state, r3d.light_textures)
+	}
+
 	r3d.backend.begin_pass(r3d.backend_state, target, width, height, flip_y, &globals)
 	r3d.in_scene = true
 	r3d.stats.passes += 1
+}
+
+r3d_light_stats :: proc() -> R3d_Light_Stats {
+	return r3d.light_stats
 }
 
 r3d_scene_frustum :: proc() -> R3d_Frustum {

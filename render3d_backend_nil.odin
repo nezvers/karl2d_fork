@@ -10,6 +10,7 @@ R3D_BACKEND_NIL :: R3d_Backend_Interface {
 	shutdown = r3d_nil_shutdown,
 	create_mesh = r3d_nil_create_mesh,
 	destroy_mesh = r3d_nil_destroy_mesh,
+	upload_lights = r3d_nil_upload_lights,
 	begin_pass = r3d_nil_begin_pass,
 	end_pass = r3d_nil_end_pass,
 	draw = r3d_nil_draw,
@@ -25,6 +26,7 @@ R3d_Nil_State :: struct {
 	meshes_alive: int,
 	last_globals: R3d_Globals,
 	last_flip_y: bool,
+	light_uploads: int,
 }
 
 r3d_nil_init :: proc(s: ^R3d_Nil_State, rb_state: ^Render_Backend_State, max_instances: int, allocator: runtime.Allocator) -> bool {
@@ -41,6 +43,10 @@ r3d_nil_create_mesh :: proc(s: ^R3d_Nil_State, vertices: []R3d_Vertex, indices: 
 
 r3d_nil_destroy_mesh :: proc(s: ^R3d_Nil_State, mesh: R3d_Backend_Mesh) {
 	s.meshes_alive -= 1
+}
+
+r3d_nil_upload_lights :: proc(s: ^R3d_Nil_State, textures: ^R3d_Light_Textures) {
+	s.light_uploads += 1
 }
 
 r3d_nil_begin_pass :: proc(s: ^R3d_Nil_State, target: Render_Target_Handle, width, height: int, flip_y: bool, globals: ^R3d_Globals) {

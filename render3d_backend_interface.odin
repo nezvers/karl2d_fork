@@ -25,6 +25,8 @@ R3d_Backend_Interface :: struct #all_or_none {
 
 	destroy_mesh: proc(s: ^R3d_Backend_State, mesh: R3d_Backend_Mesh),
 
+	upload_lights: proc(s: ^R3d_Backend_State, textures: ^R3d_Light_Textures),
+
 	begin_pass: proc(
 		s: ^R3d_Backend_State,
 		target: Render_Target_Handle,

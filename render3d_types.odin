@@ -94,6 +94,8 @@ R3d_Globals :: struct #align(16) {
 	fog_params: [4]f32,
 	wind: [4]f32,
 	wind_params: [4]f32,
+	lights: [4]f32,
+	cluster: [4]f32,
 	user: [4][4]f32,
 }
 
