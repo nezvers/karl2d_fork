@@ -133,3 +133,38 @@ r3d_mesh_data_cylinder :: proc(radius: f32 = 0.5, height: f32 = 1, segments: int
 	}
 	return data
 }
+
+r3d_mesh_data_append :: proc(dst: ^R3d_Mesh_Data, src: R3d_Mesh_Data, transform: Mat4 = 1, color_override: Maybe(Color) = nil) {
+	base := u32(len(dst.vertices))
+
+	for v in src.vertices {
+		out := v
+		p := transform * [4]f32{v.position.x, v.position.y, v.position.z, 1}
+		out.position = p.xyz
+		n := transform * [4]f32{v.normal.x, v.normal.y, v.normal.z, 0}
+		out.normal = linalg.normalize0(n.xyz)
+		o := Vec3{f32(v.outline_normal.x), f32(v.outline_normal.y), f32(v.outline_normal.z)} / 127
+		oo := transform * [4]f32{o.x, o.y, o.z, 0}
+		out.outline_normal = pack_snorm(linalg.normalize0(oo.xyz))
+
+		if color, ok := color_override.?; ok {
+			out.color = color
+		}
+
+		append(&dst.vertices, out)
+	}
+
+	for index in src.indices {
+		append(&dst.indices, base + index)
+	}
+}
+
+r3d_mesh_data_radius :: proc(data: R3d_Mesh_Data) -> f32 {
+	radius_squared: f32
+
+	for v in data.vertices {
+		radius_squared = max(radius_squared, linalg.length2(v.position))
+	}
+
+	return math.sqrt(radius_squared)
+}

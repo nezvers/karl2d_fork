@@ -83,6 +83,7 @@ step :: proc() -> bool {
 	}
 
 	environment := k2.r3d_environment_default()
+	environment.time_override = t
 	environment.sun_direction = {math.cos(t * 0.4), 0.9, math.sin(t * 0.4)}
 	environment.fog_density = 0.012
 	environment.fog_start = 14

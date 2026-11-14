@@ -53,6 +53,7 @@ R3d_Environment :: struct {
 	wind_strength: f32,
 	wind_frequency: f32,
 	wind_gust: f32,
+	time_override: Maybe(f32),
 	user: [4][4]f32,
 }
 
@@ -75,6 +76,8 @@ R3d_Material :: struct {
 	use_vertex_color: bool,
 	unlit: bool,
 	cutout: f32,
+	wind_weight: f32,
+	wind_height: f32,
 }
 
 R3d_Globals :: struct #align(16) {
@@ -103,10 +106,11 @@ R3d_Material_Constants :: struct #align(16) {
 	outline_color: [4]f32,
 	outline_params: [4]f32,
 	flags: [4]f32,
+	wind: [4]f32,
 }
 
 #assert(size_of(R3d_Globals) % 16 == 0)
-#assert(size_of(R3d_Material_Constants) == 128)
+#assert(size_of(R3d_Material_Constants) == 144)
 
 R3d_Pass :: enum {
 	Main,
@@ -142,6 +146,7 @@ r3d_material_default :: proc() -> R3d_Material {
 		outline_color = {0.05, 0.04, 0.07, 1},
 		outline_width = 0,
 		cutout = 0,
+		wind_height = 1,
 	}
 }
 

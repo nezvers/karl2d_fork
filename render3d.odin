@@ -21,6 +21,7 @@ R3d_State :: struct {
 	max_instances: int,
 	in_scene: bool,
 	stats: R3d_Stats,
+	frustum: R3d_Frustum,
 }
 
 @(private="file")
@@ -151,9 +152,14 @@ r3d_begin_scene :: proc(camera: R3d_Camera, environment: R3d_Environment) {
 	}
 
 	globals := r3d_make_globals(camera, environment, view, projection, width, height)
+	r3d.frustum = r3d_frustum_from_view_projection(globals.view_proj, camera.position)
 	r3d.backend.begin_pass(r3d.backend_state, target, width, height, flip_y, &globals)
 	r3d.in_scene = true
 	r3d.stats.passes += 1
+}
+
+r3d_scene_frustum :: proc() -> R3d_Frustum {
+	return r3d.frustum
 }
 
 r3d_end_scene :: proc() {
@@ -241,6 +247,10 @@ r3d_make_globals :: proc(camera: R3d_Camera, env: R3d_Environment, view, project
 	g.view_proj = projection * view
 	g.camera_position = {camera.position.x, camera.position.y, camera.position.z, 1}
 	g.time = {f32(get_time()), get_frame_time(), 0, 0}
+
+	if time, ok := env.time_override.?; ok {
+		g.time.x = time
+	}
 	g.viewport = {f32(width), f32(height), 1 / f32(max(width, 1)), 1 / f32(max(height, 1))}
 
 	sun := env.sun_direction
@@ -282,6 +292,7 @@ r3d_make_material_constants :: proc(m: R3d_Material) -> R3d_Material_Constants {
 		m.cutout,
 		1 if m.unlit else 0,
 	}
+	c.wind = {m.wind_weight, max(m.wind_height, 0.001), 0, 0}
 	return c
 }
 

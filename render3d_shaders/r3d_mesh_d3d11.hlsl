@@ -1,4 +1,4 @@
-// RENDER3D: forward toon shader of the 3D layer (D3D11). Fixed resource contract: b0 globals, b1 material, t0 instance data (vertex stage), t1 albedo, t2 ramp.
+// RENDER3D: forward toon shader of the 3D layer (D3D11). Fixed resource contract: b0 globals, b1 material, t0 instance data (vertex stage), t1 albedo, t2 ramp. Instance texels 0-2 transform rows, 3 tint, 4 tween (from, to, start, duration), 5 tween (easing, effect, loop, phase), 6-7 free.
 cbuffer Globals : register(b0) {
 	float4x4 view_proj;
 	float4x4 view;
@@ -25,6 +25,7 @@ cbuffer Material : register(b1) {
 	float4 outline_color;
 	float4 outline_params;
 	float4 flags;
+	float4 wind_material;
 };
 
 Texture2D instance_data : register(t0);
@@ -54,6 +55,7 @@ struct VS_OUT {
 	float2 uv : TEXCOORD2;
 	float4 color : COLOR0;
 	float4 instance_tint : COLOR1;
+	float2 tween : TEXCOORD3;
 };
 
 float4 fetch_instance(uint instance, uint k) {
@@ -70,40 +72,71 @@ float3 transform_direction(float4 r0, float4 r1, float4 r2, float3 d) {
 	return float3(dot(r0.xyz, d), dot(r1.xyz, d), dot(r2.xyz, d));
 }
 
-VS_OUT vs_main(VS_IN v) {
-	float4 r0 = fetch_instance(v.instance, 0);
-	float4 r1 = fetch_instance(v.instance, 1);
-	float4 r2 = fetch_instance(v.instance, 2);
-
-	VS_OUT o;
-	float3 world = transform_point(r0, r1, r2, v.position);
-	o.world_pos = world;
-	o.normal = normalize(transform_direction(r0, r1, r2, v.normal));
-	o.uv = v.uv;
-	o.color = v.color;
-	o.instance_tint = fetch_instance(v.instance, 3);
-	o.clip = mul(view_proj, float4(world, 1));
-	return o;
+float ease(float t, int id) {
+	float x = saturate(t);
+	if (id == 1) return x * x;
+	if (id == 2) return 1.0 - (1.0 - x) * (1.0 - x);
+	if (id == 3) return x < 0.5 ? 2.0 * x * x : 1.0 - 2.0 * (1.0 - x) * (1.0 - x);
+	if (id == 4) {
+		float d = x - 1.0;
+		return 1.0 + 2.70158 * d * d * d + 1.70158 * d * d;
+	}
+	return x;
 }
 
-VS_OUT vs_outline(VS_IN v) {
+float tween_value(float4 p0, float4 p1) {
+	if (p0.w <= 0.0) return 1.0;
+	float u = (time.x - p0.z) / p0.w;
+	int loop_mode = int(p1.z + 0.5);
+	if (loop_mode == 0) {
+		u = saturate(u);
+	} else if (loop_mode == 1) {
+		u = frac(max(u, 0.0));
+	} else {
+		float m = frac(max(u, 0.0) * 0.5) * 2.0;
+		u = m < 1.0 ? m : 2.0 - m;
+	}
+	return lerp(p0.x, p0.y, ease(u, int(p1.x + 0.5)));
+}
+
+float3 wind_offset(float3 world, float local_y, float phase) {
+	float bend = wind_material.x * pow(saturate(local_y / wind_material.y), 2.0);
+	if (bend <= 0.0) return float3(0.0, 0.0, 0.0);
+	float t = time.x * wind.w;
+	float w = sin(t + dot(world.xz, wind.xz) * 0.6 + phase) + 0.5 * wind_params.x * sin(t * 2.3 + world.x * 0.9 + phase * 1.7);
+	return wind.xyz * (w * bend);
+}
+
+VS_OUT vs_common(VS_IN v, bool outline) {
 	float4 r0 = fetch_instance(v.instance, 0);
 	float4 r1 = fetch_instance(v.instance, 1);
 	float4 r2 = fetch_instance(v.instance, 2);
+	float4 p0 = fetch_instance(v.instance, 4);
+	float4 p1 = fetch_instance(v.instance, 5);
 
-	float3 base_normal = v.outline_normal.xyz;
-	if (dot(base_normal, base_normal) < 0.001) {
-		base_normal = v.normal;
+	int effect = int(p1.y + 0.5);
+	float tw = tween_value(p0, p1);
+
+	float3 local = v.position;
+	if (effect == 1) local *= tw;
+	float3 world = transform_point(r0, r1, r2, local);
+	if (effect == 3) world.y += tw;
+	world += wind_offset(world, v.position.y, p1.w);
+
+	float3 normal = v.normal;
+	if (outline) {
+		normal = v.outline_normal.xyz;
+		if (dot(normal, normal) < 0.001) normal = v.normal;
 	}
-
-	float3 world = transform_point(r0, r1, r2, v.position);
-	float3 world_normal = normalize(transform_direction(r0, r1, r2, base_normal));
+	float3 world_normal = normalize(transform_direction(r0, r1, r2, normal));
 
 	float4 clip = mul(view_proj, float4(world, 1));
-	float4 clip_pushed = mul(view_proj, float4(world + world_normal, 1));
-	float2 direction = clip_pushed.xy / clip_pushed.w - clip.xy / clip.w;
-	direction = normalize(direction + float2(1e-6, 0));
-	clip.xy += direction * outline_params.x * 2.0 * viewport.zw * clip.w;
+	if (outline) {
+		float4 clip_pushed = mul(view_proj, float4(world + world_normal, 1));
+		float2 direction = clip_pushed.xy / clip_pushed.w - clip.xy / clip.w;
+		direction = normalize(direction + float2(1e-6, 0));
+		clip.xy += direction * outline_params.x * 2.0 * viewport.zw * clip.w;
+	}
 
 	VS_OUT o;
 	o.clip = clip;
@@ -112,7 +145,16 @@ VS_OUT vs_outline(VS_IN v) {
 	o.uv = v.uv;
 	o.color = v.color;
 	o.instance_tint = fetch_instance(v.instance, 3);
+	o.tween = float2(tw, float(effect));
 	return o;
+}
+
+VS_OUT vs_main(VS_IN v) {
+	return vs_common(v, false);
+}
+
+VS_OUT vs_outline(VS_IN v) {
+	return vs_common(v, true);
 }
 
 float toon_light(float t) {
@@ -128,6 +170,7 @@ float toon_light(float t) {
 
 float4 ps_main(VS_OUT i) : SV_Target {
 	float4 base = tint * i.instance_tint;
+	int effect = int(i.tween.y + 0.5);
 
 	if (flags.x > 0.5) {
 		base *= albedo_tex.Sample(linear_smp, i.uv);
@@ -137,39 +180,49 @@ float4 ps_main(VS_OUT i) : SV_Target {
 		base *= i.color;
 	}
 
+	if (effect == 2) {
+		base.a *= i.tween.x;
+	}
+
 	if (flags.z > 0.0 && base.a < flags.z) {
 		discard;
 	}
 
+	float3 color;
+
 	if (flags.w > 0.5) {
-		return float4(base.rgb, base.a);
+		color = base.rgb;
+	} else {
+		float3 n = normalize(i.normal);
+		float3 view_vec = camera_position.xyz - i.world_pos;
+		float dist = length(view_vec);
+		float3 v = view_vec / max(dist, 0.0001);
+		float3 l = sun_direction.xyz;
+		float ndl = dot(n, l);
+
+		float lit = toon_light(ndl * 0.5 + 0.5);
+		float shade = lerp(toon.w, 1.0, lit);
+		float3 ambient = lerp(ambient_ground.rgb, ambient_sky.rgb, n.y * 0.5 + 0.5);
+		color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade);
+
+		if (specular.a > 0.0) {
+			float3 h = normalize(l + v);
+			float s = pow(saturate(dot(n, h)), specular.a);
+			color += specular.rgb * smoothstep(0.5, 0.55, s) * lit;
+		}
+
+		float rim = pow(1.0 - saturate(dot(n, v)), max(rim_color.a, 0.001));
+		rim = smoothstep(rim_params.x, rim_params.x + max(rim_params.y, 0.001), rim);
+		color += rim_color.rgb * rim * saturate(ndl * 0.5 + 0.5);
+
+		if (fog_params.x > 0.0) {
+			float fog = 1.0 - exp2(-fog_params.x * max(dist - fog_params.y, 0.0));
+			color = lerp(color, fog_color.rgb, saturate(fog));
+		}
 	}
 
-	float3 n = normalize(i.normal);
-	float3 view_vec = camera_position.xyz - i.world_pos;
-	float dist = length(view_vec);
-	float3 v = view_vec / max(dist, 0.0001);
-	float3 l = sun_direction.xyz;
-	float ndl = dot(n, l);
-
-	float lit = toon_light(ndl * 0.5 + 0.5);
-	float shade = lerp(toon.w, 1.0, lit);
-	float3 ambient = lerp(ambient_ground.rgb, ambient_sky.rgb, n.y * 0.5 + 0.5);
-	float3 color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade);
-
-	if (specular.a > 0.0) {
-		float3 h = normalize(l + v);
-		float s = pow(saturate(dot(n, h)), specular.a);
-		color += specular.rgb * smoothstep(0.5, 0.55, s) * lit;
-	}
-
-	float rim = pow(1.0 - saturate(dot(n, v)), max(rim_color.a, 0.001));
-	rim = smoothstep(rim_params.x, rim_params.x + max(rim_params.y, 0.001), rim);
-	color += rim_color.rgb * rim * saturate(ndl * 0.5 + 0.5);
-
-	if (fog_params.x > 0.0) {
-		float fog = 1.0 - exp2(-fog_params.x * max(dist - fog_params.y, 0.0));
-		color = lerp(color, fog_color.rgb, saturate(fog));
+	if (effect == 4) {
+		color += i.tween.x;
 	}
 
 	return float4(color, base.a);
@@ -177,6 +230,11 @@ float4 ps_main(VS_OUT i) : SV_Target {
 
 float4 ps_outline(VS_OUT i) : SV_Target {
 	float3 color = outline_color.rgb;
+	float alpha = outline_color.a;
+
+	if (int(i.tween.y + 0.5) == 2) {
+		alpha *= i.tween.x;
+	}
 
 	if (fog_params.x > 0.0) {
 		float dist = length(camera_position.xyz - i.world_pos);
@@ -184,5 +242,5 @@ float4 ps_outline(VS_OUT i) : SV_Target {
 		color = lerp(color, fog_color.rgb, saturate(fog));
 	}
 
-	return float4(color, outline_color.a);
+	return float4(color, alpha);
 }

@@ -1,4 +1,4 @@
-// RENDER3D: forward toon shader of the 3D layer for GL (#version 330 core) and WebGL2 (#version 300 es). The backend prepends the version header and one of R3D_VERTEX / R3D_FRAGMENT, plus R3D_OUTLINE for the outline pass. Same resource contract as the HLSL file: block 0 globals, block 1 material, unit 0 instance data (vertex stage), unit 1 albedo, unit 2 ramp.
+// RENDER3D: forward toon shader of the 3D layer for GL (#version 330 core) and WebGL2 (#version 300 es). The backend prepends the version header and one of R3D_VERTEX / R3D_FRAGMENT, plus R3D_OUTLINE for the outline pass. Same resource contract and formulas as the HLSL file: block 0 globals, block 1 material, unit 0 instance data (vertex stage), unit 1 albedo, unit 2 ramp. Instance texels 0-2 transform rows, 3 tint, 4 tween (from, to, start, duration), 5 tween (easing, effect, loop, phase), 6-7 free.
 
 #ifdef R3D_VERTEX
 #define VARYING out
@@ -32,6 +32,7 @@ layout(std140) uniform Material {
 	vec4 outline_color;
 	vec4 outline_params;
 	vec4 flags;
+	vec4 wind_material;
 };
 
 uniform sampler2D instance_data;
@@ -46,6 +47,7 @@ VARYING vec3 v_normal;
 VARYING vec2 v_uv;
 VARYING vec4 v_color;
 VARYING vec4 v_instance_tint;
+VARYING vec2 v_tween;
 
 #ifdef R3D_VERTEX
 
@@ -71,12 +73,56 @@ vec3 transform_direction(vec4 r0, vec4 r1, vec4 r2, vec3 d) {
 	return vec3(dot(r0.xyz, d), dot(r1.xyz, d), dot(r2.xyz, d));
 }
 
+float ease(float t, int id) {
+	float x = clamp(t, 0.0, 1.0);
+	if (id == 1) return x * x;
+	if (id == 2) return 1.0 - (1.0 - x) * (1.0 - x);
+	if (id == 3) return x < 0.5 ? 2.0 * x * x : 1.0 - 2.0 * (1.0 - x) * (1.0 - x);
+	if (id == 4) {
+		float d = x - 1.0;
+		return 1.0 + 2.70158 * d * d * d + 1.70158 * d * d;
+	}
+	return x;
+}
+
+float tween_value(vec4 p0, vec4 p1) {
+	if (p0.w <= 0.0) return 1.0;
+	float u = (time.x - p0.z) / p0.w;
+	int loop_mode = int(p1.z + 0.5);
+	if (loop_mode == 0) {
+		u = clamp(u, 0.0, 1.0);
+	} else if (loop_mode == 1) {
+		u = fract(max(u, 0.0));
+	} else {
+		float m = fract(max(u, 0.0) * 0.5) * 2.0;
+		u = m < 1.0 ? m : 2.0 - m;
+	}
+	return mix(p0.x, p0.y, ease(u, int(p1.x + 0.5)));
+}
+
+vec3 wind_offset(vec3 world, float local_y, float phase) {
+	float bend = wind_material.x * pow(clamp(local_y / wind_material.y, 0.0, 1.0), 2.0);
+	if (bend <= 0.0) return vec3(0.0);
+	float t = time.x * wind.w;
+	float w = sin(t + dot(world.xz, wind.xz) * 0.6 + phase) + 0.5 * wind_params.x * sin(t * 2.3 + world.x * 0.9 + phase * 1.7);
+	return wind.xyz * (w * bend);
+}
+
 void main() {
 	vec4 r0 = fetch_instance(gl_InstanceID, 0);
 	vec4 r1 = fetch_instance(gl_InstanceID, 1);
 	vec4 r2 = fetch_instance(gl_InstanceID, 2);
+	vec4 p0 = fetch_instance(gl_InstanceID, 4);
+	vec4 p1 = fetch_instance(gl_InstanceID, 5);
 
-	vec3 world = transform_point(r0, r1, r2, a_position);
+	int effect = int(p1.y + 0.5);
+	float tw = tween_value(p0, p1);
+
+	vec3 local = a_position;
+	if (effect == 1) local *= tw;
+	vec3 world = transform_point(r0, r1, r2, local);
+	if (effect == 3) world.y += tw;
+	world += wind_offset(world, a_position.y, p1.w);
 
 #ifdef R3D_OUTLINE
 	vec3 base_normal = a_outline_normal.xyz;
@@ -100,6 +146,7 @@ void main() {
 	v_uv = a_uv;
 	v_color = a_color;
 	v_instance_tint = fetch_instance(gl_InstanceID, 3);
+	v_tween = vec2(tw, float(effect));
 	gl_Position = clip;
 }
 
@@ -117,13 +164,18 @@ float fog_amount(float dist) {
 
 void main() {
 	vec3 color = outline_color.rgb;
+	float alpha = outline_color.a;
+
+	if (int(v_tween.y + 0.5) == 2) {
+		alpha *= v_tween.x;
+	}
 
 	if (fog_params.x > 0.0) {
 		float dist = length(camera_position.xyz - v_world_pos);
 		color = mix(color, fog_color.rgb, fog_amount(dist));
 	}
 
-	frag_color = vec4(color, outline_color.a);
+	frag_color = vec4(color, alpha);
 }
 
 #else
@@ -141,6 +193,7 @@ float toon_light(float t) {
 
 void main() {
 	vec4 base = tint * v_instance_tint;
+	int effect = int(v_tween.y + 0.5);
 
 	if (flags.x > 0.5) {
 		base *= texture(albedo_tex, v_uv);
@@ -150,39 +203,48 @@ void main() {
 		base *= v_color;
 	}
 
+	if (effect == 2) {
+		base.a *= v_tween.x;
+	}
+
 	if (flags.z > 0.0 && base.a < flags.z) {
 		discard;
 	}
 
+	vec3 color;
+
 	if (flags.w > 0.5) {
-		frag_color = base;
-		return;
+		color = base.rgb;
+	} else {
+		vec3 n = normalize(v_normal);
+		vec3 view_vec = camera_position.xyz - v_world_pos;
+		float dist = length(view_vec);
+		vec3 v = view_vec / max(dist, 0.0001);
+		vec3 l = sun_direction.xyz;
+		float ndl = dot(n, l);
+
+		float lit = toon_light(ndl * 0.5 + 0.5);
+		float shade = mix(toon.w, 1.0, lit);
+		vec3 ambient = mix(ambient_ground.rgb, ambient_sky.rgb, n.y * 0.5 + 0.5);
+		color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade);
+
+		if (specular.a > 0.0) {
+			vec3 h = normalize(l + v);
+			float s = pow(clamp(dot(n, h), 0.0, 1.0), specular.a);
+			color += specular.rgb * smoothstep(0.5, 0.55, s) * lit;
+		}
+
+		float rim = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), max(rim_color.a, 0.001));
+		rim = smoothstep(rim_params.x, rim_params.x + max(rim_params.y, 0.001), rim);
+		color += rim_color.rgb * rim * clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
+
+		if (fog_params.x > 0.0) {
+			color = mix(color, fog_color.rgb, fog_amount(dist));
+		}
 	}
 
-	vec3 n = normalize(v_normal);
-	vec3 view_vec = camera_position.xyz - v_world_pos;
-	float dist = length(view_vec);
-	vec3 v = view_vec / max(dist, 0.0001);
-	vec3 l = sun_direction.xyz;
-	float ndl = dot(n, l);
-
-	float lit = toon_light(ndl * 0.5 + 0.5);
-	float shade = mix(toon.w, 1.0, lit);
-	vec3 ambient = mix(ambient_ground.rgb, ambient_sky.rgb, n.y * 0.5 + 0.5);
-	vec3 color = base.rgb * (ambient * (1.0 - 0.5 * lit) + sun_color.rgb * shade);
-
-	if (specular.a > 0.0) {
-		vec3 h = normalize(l + v);
-		float s = pow(clamp(dot(n, h), 0.0, 1.0), specular.a);
-		color += specular.rgb * smoothstep(0.5, 0.55, s) * lit;
-	}
-
-	float rim = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), max(rim_color.a, 0.001));
-	rim = smoothstep(rim_params.x, rim_params.x + max(rim_params.y, 0.001), rim);
-	color += rim_color.rgb * rim * clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
-
-	if (fog_params.x > 0.0) {
-		color = mix(color, fog_color.rgb, fog_amount(dist));
+	if (effect == 4) {
+		color += v_tween.x;
 	}
 
 	frag_color = vec4(color, base.a);
