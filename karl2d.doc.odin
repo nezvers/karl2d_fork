@@ -1925,7 +1925,7 @@ Handle :: hm.Handle64
 Render_Backend_Texture :: distinct Handle
 Render_Target_Handle :: distinct Handle
 Font :: distinct int
-DEFAULT_FONT_DATA :: #load("default_fonts/jetbrains_mono.ttf")
+DEFAULT_FONT_DATA :: #load("default_fonts/roboto.ttf")
 
 // The cursors an operating system provides out of the box. Use with `set_cursor`.
 //
@@ -1976,8 +1976,6 @@ Font_Baked_Glyph :: struct {
 	advance: f32,
 }
 
-// TODO-UPDATE-COMMENT: The default font is now "JetBrains Mono", not "roboto".
-//---
 // The default font. It's a font called "roboto". It is loaded from `DEFAULT_FONT_DATA` on Karl2D is
 // initialized. It is the zero value, which means that any zero-initialized `Font` variable will be
 // the default font.
