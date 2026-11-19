@@ -1,7 +1,8 @@
 # karl2d for odin_plug
 
-This branch (`odin_plug` of https://github.com/nezvers/karl2d_fork) is upstream Karl2D
-(https://github.com/karl-zylinski/karl2d) plus the changes audio plugin editors need. Every change is its own commit
+The branch `render3d` of https://github.com/nezvers/karl2d_fork (the only branch besides `master`) is upstream Karl2D
+(https://github.com/karl-zylinski/karl2d) plus the changes audio plugin editors need (the `ODIN_PLUG:` commits, listed here)
+and the 3D layer on top of them (the `RENDER3D:` commits, see `RENDER3D.md`). Every change is its own commit
 and every changed line is marked with `// ODIN_PLUG:` so rebasing on upstream stays easy.
 
 Upstream base: `684e1f8` (Replace stb_rect_pack and stb_truetype with Odin ports that do the minimal stuff Karl2d needs)
@@ -28,7 +29,8 @@ cd karl2d
 git fetch upstream
 git rebase upstream/master          # conflicts only appear in lines marked // ODIN_PLUG:
 odin check examples/basics -vet
-git push --force-with-lease origin odin_plug
+odin run tools/render3d_check
+git push --force-with-lease origin render3d
 cd ..
 git add karl2d                      # odin_plug records the new submodule commit
 ```

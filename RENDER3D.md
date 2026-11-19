@@ -53,7 +53,7 @@ Not done yet: shadows, runtime AO, GPU skinning, post-effect examples, more exam
 
 ## Known facts about this branch
 
-- `tools/api_verifier` already reports `karl2d.doc.odin` as out of date on `odin_plug` (the ODIN_PLUG commits added `get_internal_state` and `parent_window`); the 3D layer adds no lines to `karl2d.odin`.
+- `tools/api_verifier` already reports `karl2d.doc.odin` as out of date (the ODIN_PLUG commits added `get_internal_state` and `parent_window`); the 3D layer adds no lines to `karl2d.odin`.
 - `odin check` of Linux targets needs the compiled stb libraries (`vendor/stb/src/build_stb.sh`), for upstream examples as well.
 
 ## Rebasing
@@ -61,9 +61,7 @@ Not done yet: shadows, runtime AO, GPU skinning, post-effect examples, more exam
 ```
 cd karl2d
 git fetch upstream
-git rebase upstream/master          # odin_plug commits first
-git switch odin_plug && git rebase upstream/master
-git switch render3d && git rebase odin_plug
+git rebase upstream/master          # one branch: the ODIN_PLUG commits come first, the RENDER3D commits after them
 odin check examples_3d/toon_scene -vet -strict-style
 odin test tests/render3d -define:KARL2D_RENDER_BACKEND=nil -define:KARL2D_AUDIO_BACKEND=nil
 ```
