@@ -1367,6 +1367,26 @@ draw_triangle :: proc(vertices: [3]Vec2, c: Color) {
 	batch_vertex(vertices[2], {0, 1}, c)
 }
 
+// ODIN_PLUG: one colour per vertex (gradients: meters, spectra), drawn in chunks through the shape texture
+Colored_Vertex :: struct {
+	position: Vec2,
+	color: Color,
+}
+
+draw_colored_triangles :: proc(vertices: []Colored_Vertex) {
+	CHUNK :: 1500
+	tex := hm.get(&s.textures, s.shape_drawing_texture)
+	offset := 0
+	for offset + 3 <= len(vertices) {
+		count := min(CHUNK, (len(vertices) - offset)/3*3)
+		_begin_textured_draw(tex, count)
+		for v in vertices[offset:offset + count] {
+			batch_vertex(v.position, {0.5, 0.5}, v.color)
+		}
+		offset += count
+	}
+}
+
 // Draw a texture at a position. The top-left corner of the texture will end up at the position.
 //
 // Optional parameters:
